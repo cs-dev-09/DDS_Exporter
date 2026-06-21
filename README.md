@@ -15,7 +15,7 @@ The easiest way to find your plugins folder is directly through Substance Painte
 Extract the downloaded **DDS_Exporter** folder directly into the `plugins` directory that just opened in Step 1. 
 
 To ensure the tool works correctly, verify that your folder structure looks exactly like this:
-```text
+
 plugins/
 └── DDS_Exporter/
     ├── __init__.py           
