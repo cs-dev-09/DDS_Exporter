@@ -11,7 +11,7 @@ import substance_painter.event
 from PySide6 import QtWidgets, QtCore, QtGui
 
 # --- CONFIGURATION ---
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # Dynamically locate the plugin's root directory
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -128,14 +128,14 @@ class NVTTWorker(QtCore.QThread):
             if self.mipmap_options["max_count"] > 0:
                 command.extend(["--max-mip-count", str(self.mipmap_options["max_count"])])
 
-            if self.mipmap_options["gamma"]:
+            is_color_map = any(kw in base_name.lower() for kw in ["basecolor", "diffuse", "albedo"])
+            if self.mipmap_options["gamma"] and is_color_map:
                 command.append("-color")
 
-            if self.mipmap_options["premult"]:
+            if self.mipmap_options["premult"] and is_color_map:
                 command.append("-alpha")
 
-        if is_normal:
-            command.append("-normal")
+        # Removed -normal flag , as it can cause unexpected channel normalization artifacts.
 
         command.extend([input_file, output_file])
 
