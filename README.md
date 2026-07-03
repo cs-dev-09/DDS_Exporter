@@ -28,15 +28,10 @@ The easiest way to find your plugins folder is directly through Substance Painte
 Extract the downloaded **DDS_Exporter** folder directly into the `plugins` directory that just opened in Step 1. 
 
 To ensure the tool works correctly, verify that your folder structure looks exactly like this:
+<img width="699" height="138" alt="image" src="https://github.com/user-attachments/assets/44a2fd4d-84ed-4e19-8834-199490ea33ba" />
 
-plugins/
-└── DDS_Exporter/
-    ├── __init__.py           
-    └── bin/                  
-        ├── FreeImage.dll    
-        ├── nvcompress.exe          
-        ├── nvtt30205.dll        
-        └── vcomp140.dll
+<img width="210" height="192" alt="image" src="https://github.com/user-attachments/assets/0b777e5d-b040-451d-af4e-43e16336c845" />
+
 
 ### Step 3: Enable the Plugin in Substance Painter
 <img width="161" height="101" alt="image" src="https://github.com/user-attachments/assets/22928a02-134a-4a97-9b7c-6a964786d114" />
