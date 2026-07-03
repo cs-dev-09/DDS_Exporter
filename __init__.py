@@ -6,12 +6,18 @@ import tempfile
 import shutil
 import concurrent.futures
 import substance_painter
+import substance_painter.application
 import substance_painter.textureset
 import substance_painter.event
-from PySide6 import QtWidgets, QtCore, QtGui
+
+IS_QT5 = substance_painter.application.version_info() < (10, 1, 0)
+if IS_QT5:
+    from PySide2 import QtWidgets, QtCore, QtGui
+else:
+    from PySide6 import QtWidgets, QtCore, QtGui
 
 # --- CONFIGURATION ---
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 # Dynamically locate the plugin's root directory
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
