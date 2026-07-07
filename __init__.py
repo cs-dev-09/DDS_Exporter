@@ -17,7 +17,7 @@ else:
     from PySide6 import QtWidgets, QtCore, QtGui
 
 # --- CONFIGURATION ---
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 # Dynamically locate the plugin's root directory
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -187,8 +187,8 @@ class TextureSetWidget(QtWidgets.QWidget):
     """Custom Accordion-style widget for individual texture sets"""
     export_toggled = QtCore.Signal(str, bool)
 
-    def __init__(self, ts_name, is_exported=True):
-        super().__init__()
+    def __init__(self, ts_name, is_exported=True, parent=None):
+        super().__init__(parent)
         self.ts_name = ts_name
         
         layout = QtWidgets.QVBoxLayout(self)
@@ -398,8 +398,12 @@ class DDSExporterWidget(QtWidgets.QWidget):
             
         for i in reversed(range(self.ts_container_layout.count())):
             w = self.ts_container_layout.itemAt(i).widget()
-            if w: w.setParent(None)
+            if w:
+                w.hide()
+                self.ts_container_layout.removeWidget(w)
+                w.deleteLater()
         self.ts_widgets.clear()
+        self.ts_settings.clear()
         
         for ts in substance_painter.textureset.all_texture_sets():
             ts_name = ts.name()
@@ -411,7 +415,7 @@ class DDSExporterWidget(QtWidgets.QWidget):
                 }
             
             is_exported = self.ts_settings[ts_name]["export"]
-            ts_widget = TextureSetWidget(ts_name, is_exported)
+            ts_widget = TextureSetWidget(ts_name, is_exported, parent=self.ts_container_widget)
             ts_widget.export_toggled.connect(self.on_ts_export_toggled)
             
             self.ts_container_layout.addWidget(ts_widget)
@@ -485,7 +489,10 @@ class DDSExporterWidget(QtWidgets.QWidget):
             
             for i in reversed(range(layout.count())):
                 w = layout.itemAt(i).widget()
-                if w: w.setParent(None)
+                if w:
+                    w.hide()
+                    layout.removeWidget(w)
+                    w.deleteLater()
                 
             layout.addWidget(QtWidgets.QLabel("Map Output"), 0, 0)
             layout.addWidget(QtWidgets.QLabel("Target Size"), 0, 1)
@@ -721,26 +728,40 @@ class DDSExporterWidget(QtWidgets.QWidget):
 # --- PLUGIN LIFECYCLE HOOKS ---
 plugin_widget = None
 project_opened_handler = None
+project_created_handler = None
+project_edition_handler = None
 
 def on_project_changed(event=None):
     if plugin_widget:
-        plugin_widget.load_state()
         plugin_widget.populate_texture_sets()
+        plugin_widget.load_state()
 
 def start_plugin():
-    global plugin_widget, project_opened_handler
+    global plugin_widget, project_opened_handler, project_created_handler, project_edition_handler
     plugin_widget = DDSExporterWidget()
     substance_painter.ui.add_dock_widget(plugin_widget)
     
     project_opened_handler = substance_painter.event.DISPATCHER.connect(
         substance_painter.event.ProjectOpened, on_project_changed
     )
+    project_created_handler = substance_painter.event.DISPATCHER.connect(
+        substance_painter.event.ProjectCreated, on_project_changed
+    )
+    project_edition_handler = substance_painter.event.DISPATCHER.connect(
+        substance_painter.event.ProjectEditionEntered, on_project_changed
+    )
 
 def close_plugin():
-    global plugin_widget, project_opened_handler
+    global plugin_widget, project_opened_handler, project_created_handler, project_edition_handler
     if project_opened_handler:
         substance_painter.event.DISPATCHER.disconnect(substance_painter.event.ProjectOpened, project_opened_handler)
         project_opened_handler = None
+    if project_created_handler:
+        substance_painter.event.DISPATCHER.disconnect(substance_painter.event.ProjectCreated, project_created_handler)
+        project_created_handler = None
+    if project_edition_handler:
+        substance_painter.event.DISPATCHER.disconnect(substance_painter.event.ProjectEditionEntered, project_edition_handler)
+        project_edition_handler = None
     if plugin_widget:
         substance_painter.ui.delete_ui_element(plugin_widget)
         plugin_widget = None
