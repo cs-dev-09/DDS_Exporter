@@ -25,11 +25,26 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 # Point to the bundled nvcompress.exe inside the "bin" subfolder
 NVTT_EXECUTABLE = os.path.join(PLUGIN_DIR, "bin", "nvcompress.exe")
 
+# Display name → nvcompress flag mapping
+FORMAT_MAP = {
+    "DXT1 (BC1)": "-bc1",
+    "DXT5 (BC3)": "-bc3",
+    "BC5":        "-bc5",
+    "BC7":        "-bc7",
+}
+
+FORMAT_TOOLTIPS = {
+    "DXT1 (BC1)": "No alpha — best for opaque color maps, masks",
+    "DXT5 (BC3)": "Interpolated alpha — for textures with transparency",
+    "BC5":        "Two channel — ideal for normal maps (XY only)",
+    "BC7":        "High quality — best overall, supports full alpha",
+}
+
 class NVTTWorker(QtCore.QThread):
     """Background thread to process DDS conversion and per-map image scaling."""
     progress_update = QtCore.Signal(int)
     finished_success = QtCore.Signal(int)
-    finished_error = QtCore.Signal(str)
+    finished_with_errors = QtCore.Signal(int, int, str)
 
     def __init__(self, exported_files, temp_dir, final_out_dir, exe_path, global_res, global_format, ts_settings, mipmap_options):
         super().__init__()
@@ -101,7 +116,8 @@ class NVTTWorker(QtCore.QThread):
 
         # --- RESOLUTION & FORMAT RESIZING ENGINE ---
         target_res_int = self.global_res_int if target_res_str == "Global" else int(target_res_str)
-        final_comp_format = self.global_format if comp_format == "Global" else comp_format
+        resolved_comp = self.global_format if comp_format == "Global" else comp_format
+        final_comp_format = FORMAT_MAP.get(resolved_comp, resolved_comp)
 
         if target_res_int != self.global_res_int:
             try:
@@ -155,6 +171,7 @@ class NVTTWorker(QtCore.QThread):
             return
 
         max_workers = min(8, max(1, os.cpu_count() or 4), total_files)
+        failed_files = []
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -165,23 +182,22 @@ class NVTTWorker(QtCore.QThread):
                     try:
                         future.result()
                     except subprocess.CalledProcessError as e:
-                        for pending in future_to_file:
-                            pending.cancel()
-                        self.finished_error.emit(f"Compression failed on {file}: {str(e)}")
-                        return
+                        failed_files.append(f"{file}: {e}")
                     except Exception as e:
-                        for pending in future_to_file:
-                            pending.cancel()
-                        self.finished_error.emit(str(e))
-                        return
+                        failed_files.append(f"{file}: {e}")
 
                     completed += 1
                     progress_percent = int((completed / total_files) * 100)
                     self.progress_update.emit(progress_percent)
 
-            self.finished_success.emit(total_files)
+            succeeded = total_files - len(failed_files)
+            if failed_files:
+                error_log = "\n".join(failed_files)
+                self.finished_with_errors.emit(succeeded, len(failed_files), error_log)
+            else:
+                self.finished_success.emit(total_files)
         except Exception as e:
-            self.finished_error.emit(str(e))
+            self.finished_with_errors.emit(0, total_files, str(e))
 
 class TextureSetWidget(QtWidgets.QWidget):
     """Custom Accordion-style widget for individual texture sets"""
@@ -288,8 +304,12 @@ class DDSExporterWidget(QtWidgets.QWidget):
 
         grid_layout.addWidget(QtWidgets.QLabel("Global Format:"), 2, 0)
         self.global_format_combo = QtWidgets.QComboBox()
-        self.global_format_combo.addItems(["-bc1", "-bc3", "-bc5", "-bc7"])
-        self.global_format_combo.setCurrentText("-bc7")
+        for name in FORMAT_MAP.keys():
+            self.global_format_combo.addItem(name)
+        self.global_format_combo.setCurrentText("BC7")
+        # Add tooltips per item
+        for i, name in enumerate(FORMAT_MAP.keys()):
+            self.global_format_combo.setItemData(i, FORMAT_TOOLTIPS.get(name, ""), QtCore.Qt.ToolTipRole)
         self.global_format_combo.currentTextChanged.connect(self.save_state)
         grid_layout.addWidget(self.global_format_combo, 2, 1)
 
@@ -352,24 +372,16 @@ class DDSExporterWidget(QtWidgets.QWidget):
         btn_v_layout = QtWidgets.QVBoxLayout()
         btn_v_layout.setSpacing(5)
         
-        load_h_layout = QtWidgets.QHBoxLayout()
-        self.load_btn = QtWidgets.QPushButton("Refresh Saved Settings")
-        load_h_layout.addStretch()
-        load_h_layout.addWidget(self.load_btn)
-        load_h_layout.addStretch()
-        
         export_h_layout = QtWidgets.QHBoxLayout()
         self.export_btn = QtWidgets.QPushButton("Export to DDS")
         export_h_layout.addStretch()
         export_h_layout.addWidget(self.export_btn)
         export_h_layout.addStretch()
         
-        btn_v_layout.addLayout(load_h_layout)
         btn_v_layout.addLayout(export_h_layout)
         
         content_layout.addLayout(btn_v_layout)
         
-        self.load_btn.clicked.connect(self.load_state)
         self.export_btn.clicked.connect(self.start_export_process)
 
         content_layout.addSpacing(10)
@@ -388,6 +400,11 @@ class DDSExporterWidget(QtWidgets.QWidget):
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll_area)
+
+        version_label = QtWidgets.QLabel(f"v{__version__}")
+        version_label.setAlignment(QtCore.Qt.AlignRight)
+        version_label.setStyleSheet("color: gray; font-size: 10px; padding: 2px 6px;")
+        main_layout.addWidget(version_label)
 
     def populate_texture_sets(self):
         if not substance_painter.project.is_open():
@@ -481,7 +498,7 @@ class DDSExporterWidget(QtWidgets.QWidget):
             return
             
         map_templates = self.get_preset_maps(filepath)
-        formats_pool = ["Global", "-bc1", "-bc3", "-bc5", "-bc7"] 
+        formats_pool = ["Global"] + list(FORMAT_MAP.keys())
         res_pool = ["Global", "8192", "4096", "2048", "1024", "512", "256", "128", "64", "32"]
 
         for ts_name, widget in self.ts_widgets.items():
@@ -522,6 +539,8 @@ class DDSExporterWidget(QtWidgets.QWidget):
                 
                 comp_combo = QtWidgets.QComboBox()
                 comp_combo.addItems(formats_pool)
+                for ci, fname in enumerate(formats_pool):
+                    comp_combo.setItemData(ci, FORMAT_TOOLTIPS.get(fname, ""), QtCore.Qt.ToolTipRole)
                 comp_combo.setCurrentText(rule["comp"])
                 comp_combo.currentTextChanged.connect(lambda val, t_set=ts_name, t_tmpl=tmpl: self.on_rule_value_changed(t_set, t_tmpl, "comp", val))
                 
@@ -539,6 +558,8 @@ class DDSExporterWidget(QtWidgets.QWidget):
             
             fb_comp = QtWidgets.QComboBox()
             fb_comp.addItems(formats_pool)
+            for ci, fname in enumerate(formats_pool):
+                fb_comp.setItemData(ci, FORMAT_TOOLTIPS.get(fname, ""), QtCore.Qt.ToolTipRole)
             fb_comp.setCurrentText(ts_fallback["comp"])
             fb_comp.currentTextChanged.connect(lambda val, t_set=ts_name: self.on_fallback_value_changed(t_set, "comp", val))
             
@@ -561,25 +582,31 @@ class DDSExporterWidget(QtWidgets.QWidget):
         self.ts_settings[ts_name]["fallback"][key] = value
         self.save_state()
 
-    def get_prefs_path(self):
+    def get_global_prefs_path(self):
         return os.path.join(os.path.expanduser('~'), 'Documents', 'SP_NVTT_Settings.json')
-
-    def get_project_key(self):
-        if not substance_painter.project.is_open(): return "UNSAVED_PROJECT"
-        path = substance_painter.project.file_path()
-        return path.replace("\\", "/").lower() if path else "UNSAVED_PROJECT"
 
     def save_state(self):
         if getattr(self, 'is_loading_ui', False): return
         self._save_timer.start()
 
     def _write_state_to_disk(self):
-        state = {
-            "output_dir": self.dir_input.text(),
-            "preset": self.preset_combo.currentText(),
-            "global_res": self.res_combo.currentText(),
-            "global_format": self.global_format_combo.currentText(), 
-            "ts_settings": self.ts_settings, 
+        # --- Per-project settings → saved inside .spp via Metadata API ---
+        if substance_painter.project.is_open():
+            try:
+                meta = substance_painter.project.Metadata("DDS_Exporter")
+                project_state = {
+                    "output_dir": self.dir_input.text(),
+                    "preset": self.preset_combo.currentText(),
+                    "global_res": self.res_combo.currentText(),
+                    "global_format": self.global_format_combo.currentText(),
+                    "ts_settings": self.ts_settings
+                }
+                meta.set("settings", project_state)
+            except Exception as e:
+                print(f"DDS Exporter: Failed to save project metadata: {e}")
+
+        # --- Global defaults → saved to JSON file ---
+        global_state = {
             "mipmap": {
                 "generate": self.mipmap_group.isChecked(),
                 "min_size": self.min_mip_spin.value(),
@@ -589,47 +616,86 @@ class DDSExporterWidget(QtWidgets.QWidget):
                 "filter": self.filter_combo.currentText()
             }
         }
-        prefs_path = self.get_prefs_path()
-        data = {}
+        prefs_path = self.get_global_prefs_path()
         try:
-            if os.path.exists(prefs_path):
-                with open(prefs_path, 'r') as f: data = json.load(f)
-        except Exception: pass
-        data[self.get_project_key()] = state
-        try:
-            with open(prefs_path, 'w') as f: json.dump(data, f, indent=4)
-        except Exception: pass
+            with open(prefs_path, 'w') as f:
+                json.dump(global_state, f, indent=4)
+        except Exception as e:
+            print(f"DDS Exporter: Failed to save global prefs: {e}")
 
     def load_state(self):
-        self.is_loading_ui = True 
-        prefs_path = self.get_prefs_path()
+        self.is_loading_ui = True
+
+        # --- Load global defaults from JSON ---
+        prefs_path = self.get_global_prefs_path()
+        legacy_data = {}
         try:
             if os.path.exists(prefs_path):
-                with open(prefs_path, 'r') as f: data = json.load(f)
-                proj_key = self.get_project_key()
-                state = data.get(proj_key, data.get(substance_painter.project.file_path() if substance_painter.project.is_open() else "", data.get("UNSAVED_PROJECT", {})))
-                
-                if "output_dir" in state: self.dir_input.setText(state["output_dir"])
-                if "preset" in state:
-                    self.preset_combo.blockSignals(True)
-                    self.preset_combo.setCurrentText(state["preset"])
-                    self.preset_combo.blockSignals(False)
-                    self.update_rules_ui(state["preset"])
-                if "global_res" in state: self.res_combo.setCurrentText(state["global_res"])
-                if "global_format" in state: self.global_format_combo.setCurrentText(state["global_format"]) 
-                
-                if "ts_settings" in state:
-                    self.ts_settings = state["ts_settings"]
-                    
-                if "mipmap" in state:
-                    mip = state["mipmap"]
+                with open(prefs_path, 'r') as f:
+                    legacy_data = json.load(f)
+                if "mipmap" in legacy_data:
+                    mip = legacy_data["mipmap"]
                     self.mipmap_group.setChecked(mip.get("generate", True))
                     self.min_mip_spin.setValue(mip.get("min_size", 4))
                     self.max_mip_spin.setValue(mip.get("max_count", 0))
                     self.gamma_chk.setChecked(mip.get("gamma", True))
                     self.premult_chk.setChecked(mip.get("premult", True))
                     self.filter_combo.setCurrentText(mip.get("filter", "Mitchell"))
-        except Exception: pass
+        except Exception:
+            pass
+
+        # --- Load per-project settings from .spp Metadata ---
+        if substance_painter.project.is_open():
+            migrated = False
+            try:
+                meta = substance_painter.project.Metadata("DDS_Exporter")
+                state = meta.get("settings")
+            except Exception:
+                state = None
+
+            # --- One-time migration from legacy JSON ---
+            if not state and legacy_data:
+                proj_path = substance_painter.project.file_path()
+                legacy_key = proj_path.replace("\\", "/").lower() if proj_path else None
+                legacy_state = None
+                if legacy_key:
+                    legacy_state = legacy_data.get(legacy_key)
+                if not legacy_state:
+                    legacy_state = legacy_data.get(proj_path, legacy_data.get("UNSAVED_PROJECT"))
+                if legacy_state and isinstance(legacy_state, dict) and "output_dir" in legacy_state:
+                    state = legacy_state
+                    migrated = True
+                    # Also migrate mipmap from this project's old data
+                    if "mipmap" in legacy_state:
+                        mip = legacy_state["mipmap"]
+                        self.mipmap_group.setChecked(mip.get("generate", True))
+                        self.min_mip_spin.setValue(mip.get("min_size", 4))
+                        self.max_mip_spin.setValue(mip.get("max_count", 0))
+                        self.gamma_chk.setChecked(mip.get("gamma", True))
+                        self.premult_chk.setChecked(mip.get("premult", True))
+                        self.filter_combo.setCurrentText(mip.get("filter", "Mitchell"))
+
+            if state:
+                if "output_dir" in state:
+                    self.dir_input.setText(state["output_dir"])
+                if "preset" in state:
+                    self.preset_combo.blockSignals(True)
+                    self.preset_combo.setCurrentText(state["preset"])
+                    self.preset_combo.blockSignals(False)
+                    self.update_rules_ui(state["preset"])
+                if "global_res" in state:
+                    self.res_combo.setCurrentText(state["global_res"])
+                if "global_format" in state:
+                    self.global_format_combo.setCurrentText(state["global_format"])
+                if "ts_settings" in state:
+                    self.ts_settings = state["ts_settings"]
+
+            # Save migrated data into project Metadata so it's not needed again
+            if migrated:
+                self.is_loading_ui = False
+                self.save_state()
+                self.is_loading_ui = True
+
         self.is_loading_ui = False
 
     def browse_directory(self):
@@ -707,17 +773,22 @@ class DDSExporterWidget(QtWidgets.QWidget):
         )
         self.worker.progress_update.connect(self.update_progress)
         self.worker.finished_success.connect(self.on_success)
-        self.worker.finished_error.connect(self.on_error)
+        self.worker.finished_with_errors.connect(self.on_partial_error)
         self.worker.start()
 
     def update_progress(self, val): self.progress_bar.setValue(val)
     
     def on_success(self, count):
-        QtWidgets.QMessageBox.information(self, "Success", f"Successfully exported  {count} textures.")
+        QtWidgets.QMessageBox.information(self, "Success", f"Successfully exported {count} textures.")
         self.cleanup_and_reset()
         
-    def on_error(self, error_msg):
-        QtWidgets.QMessageBox.critical(self, "Conversion Error", error_msg)
+    def on_partial_error(self, succeeded, failed, error_log):
+        msg = QtWidgets.QMessageBox(self)
+        msg.setIcon(QtWidgets.QMessageBox.Warning)
+        msg.setWindowTitle("Export Completed with Errors")
+        msg.setText(f"{succeeded} succeeded, {failed} failed.")
+        msg.setDetailedText(error_log)
+        msg.exec_()
         self.cleanup_and_reset()
         
     def cleanup_and_reset(self):
